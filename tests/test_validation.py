@@ -11,6 +11,7 @@ from common.validation import (
     validate_carbon_intensity,
     validate_generation_mix,
     validate_weather,
+    validate_derated_margin,
 )
 
 
@@ -111,3 +112,52 @@ class TestWeatherValidation:
                   "shortwave_radiation": 0.0,
                   "ingested_at": "2026-10-15T00:36:00+00:00"}
         assert any("temperature_2m" in e for e in validate_weather(record))
+
+
+def valid_derated_margin():
+    return {
+        "settlement_date": "2026-10-11",
+        "settlement_period": 40,
+        "start_time": "2026-10-11T18:30:00Z",
+        "forecast_horizon": 1,
+        "derated_margin_mw": 7104.4893,
+        "loss_of_load_probability": 0.0,
+        "publish_time": "2026-10-11T17:34:42Z",
+        "ingested_at": "2026-10-11T17:36:00+00:00",
+    }
+
+
+class TestDeratedMarginValidation:
+    def test_valid_record_passes(self):
+        assert validate_derated_margin(valid_derated_margin()) == []
+
+    def test_missing_margin_fails(self):
+        record = valid_derated_margin()
+        record["derated_margin_mw"] = None
+        errors = validate_derated_margin(record)
+        assert any("derated_margin_mw" in e for e in errors)
+
+    def test_small_negative_margin_is_valid(self):
+        # A genuine shortfall can push the forecast margin below zero
+        record = valid_derated_margin()
+        record["derated_margin_mw"] = -250.0
+        assert validate_derated_margin(record) == []
+
+    def test_implausible_margin_fails(self):
+        # Larger than GB peak demand -- almost certainly kW, not MW
+        record = valid_derated_margin()
+        record["derated_margin_mw"] = 7_104_489.3
+        errors = validate_derated_margin(record)
+        assert any("derated_margin_mw" in e for e in errors)
+
+    def test_probability_above_one_fails(self):
+        record = valid_derated_margin()
+        record["loss_of_load_probability"] = 1.5
+        errors = validate_derated_margin(record)
+        assert any("loss_of_load_probability" in e for e in errors)
+
+    def test_impossible_horizon_fails(self):
+        record = valid_derated_margin()
+        record["forecast_horizon"] = 0
+        errors = validate_derated_margin(record)
+        assert any("forecast_horizon" in e for e in errors)

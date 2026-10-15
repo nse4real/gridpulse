@@ -11,6 +11,7 @@ from metrics.domain import (
     spark_spread,
     wind_shortfall_pct,
     market_stress_index,
+    margin_tightness_score,
     KWH_PER_THERM,
 )
 
@@ -68,29 +69,53 @@ class TestWindShortfall:
         assert wind_shortfall_pct(10.0, 30.0) == pytest.approx(66.67, abs=0.01)
 
 
+class TestMarginTightness:
+    def test_comfortable_margin_scores_zero(self):
+        # Median October de-rated margin is ~21 GW
+        assert margin_tightness_score(21_445.0) == 0.0
+
+    def test_scarcity_margin_scores_100(self):
+        assert margin_tightness_score(2_000.0) == 100.0
+        assert margin_tightness_score(-500.0) == 100.0
+
+    def test_evening_peak_is_partially_tight(self):
+        # Tightest period of 8-15 Oct 2026: 7,104 MW at the 18:30 peak
+        assert margin_tightness_score(7_104.0) == pytest.approx(71.6, abs=0.1)
+
+    def test_missing_forecast_scores_zero(self):
+        assert margin_tightness_score(None) == 0.0
+
+
 class TestMarketStressIndex:
     def test_calm_market_near_zero(self):
         result = market_stress_index(
-            buy_sell_spread_gbp=0.0, abs_niv_mwh=10.0,
+            derated_margin_mw=25_000.0, abs_niv_mwh=10.0,
             price_volatility_gbp=2.0, wind_shortfall_pct_value=0.0)
         assert result["index"] < 5
 
     def test_severe_market_near_100(self):
         result = market_stress_index(
-            buy_sell_spread_gbp=300.0, abs_niv_mwh=3000.0,
+            derated_margin_mw=2_000.0, abs_niv_mwh=3000.0,
             price_volatility_gbp=150.0, wind_shortfall_pct_value=100.0)
         assert result["index"] == pytest.approx(100.0)
 
     def test_components_capped_at_100(self):
         result = market_stress_index(
-            buy_sell_spread_gbp=9999.0, abs_niv_mwh=99999.0,
+            derated_margin_mw=-9_999.0, abs_niv_mwh=99999.0,
             price_volatility_gbp=9999.0, wind_shortfall_pct_value=500.0)
         for component in result["components"].values():
             assert component <= 100.0
 
     def test_weights_sum_to_one(self):
-        # Only the spread component active at full scale -> index = 35
+        # Only the margin component active at full scale -> index = 35
         result = market_stress_index(
-            buy_sell_spread_gbp=300.0, abs_niv_mwh=0.0,
+            derated_margin_mw=2_000.0, abs_niv_mwh=0.0,
             price_volatility_gbp=0.0, wind_shortfall_pct_value=0.0)
         assert result["index"] == pytest.approx(35.0)
+
+    def test_margin_component_reported(self):
+        result = market_stress_index(
+            derated_margin_mw=11_000.0, abs_niv_mwh=0.0,
+            price_volatility_gbp=0.0, wind_shortfall_pct_value=0.0)
+        assert result["components"]["margin_tightness"] == pytest.approx(50.0)
+        assert "buy_sell_spread" not in result["components"]

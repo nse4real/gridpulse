@@ -90,6 +90,32 @@ def get_price_volatility_24h(conn):
         return float(cur.fetchone()[0])
 
 
+def get_current_derated_margin(conn):
+    """De-rated margin for the settlement period now in delivery.
+
+    Uses that period's shortest-horizon forecast -- the freshest view NESO
+    published before delivery.
+    """
+    with conn.cursor() as cur:
+        cur.execute("SELECT to_regclass('derated_margin')")
+        if cur.fetchone()[0] is None:  # consumer not started yet
+            return None
+        cur.execute("""
+            SELECT derated_margin_mw, loss_of_load_probability,
+                   start_time, forecast_horizon
+            FROM derated_margin
+            WHERE start_time <= now()
+            ORDER BY start_time DESC, forecast_horizon ASC
+            LIMIT 1;
+        """)
+        row = cur.fetchone()
+    if not row:
+        return None
+    return {"margin_mw": float(row[0]),
+            "lolp": float(row[1]) if row[1] is not None else None,
+            "start_time": row[2].isoformat(), "horizon_h": row[3]}
+
+
 def get_latest_wind_share(conn):
     with conn.cursor() as cur:
         cur.execute("""
@@ -146,19 +172,28 @@ def compute_cycle(conn):
     volatility = get_price_volatility_24h(conn)
     wind_share = get_latest_wind_share(conn)
     shortfall = wind_shortfall_pct(wind_share, baseline_wind) if wind_share is not None else 0.0
+    margin = get_current_derated_margin(conn)
+    if margin is None:
+        print("No de-rated margin data yet -- margin component reads 0")
 
     stress = market_stress_index(
-        buy_sell_spread_gbp=max(0.0, latest["buy"] - latest["sell"]),
+        derated_margin_mw=margin["margin_mw"] if margin else None,
         abs_niv_mwh=abs(latest["niv"]),
         price_volatility_gbp=volatility,
         wind_shortfall_pct_value=shortfall,
     )
-    upsert_metric(conn, ts, "market_stress_index", stress["index"],
-                  stress["components"])
+    detail = dict(stress["components"])
+    if margin:
+        detail.update(derated_margin_mw=margin["margin_mw"],
+                      loss_of_load_probability=margin["lolp"],
+                      margin_period_start=margin["start_time"],
+                      margin_forecast_horizon_h=margin["horizon_h"])
+    upsert_metric(conn, ts, "market_stress_index", stress["index"], detail)
 
     print(f"{ts.isoformat()} headroom={headroom['headroom_pct']}% "
           f"({headroom['status']}) spark_spread={spread} "
-          f"stress={stress['index']}")
+          f"stress={stress['index']} "
+          f"margin={margin['margin_mw'] if margin else 'n/a'}MW")
 
 
 def main():

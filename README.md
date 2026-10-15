@@ -8,7 +8,7 @@ An open-source energy market monitoring platform streaming UK grid data through 
 
 ## Overview
 
-GridPulse pulls half-hourly GB settlement prices from Elexon (polled every minute), carbon intensity and generation mix from NESO (every 5 minutes) and weather from Open-Meteo (every 15 minutes). It streams them through Redpanda into TimescaleDB, and every 60 seconds turns them into three commercial signals: **price cap headroom**, a **market stress index** and the **spark spread**. The dashboard is built for supplier risk teams and trading desks. It answers one question: *are we currently buying power for more than the price cap lets us charge for it, and is the grid getting more or less stressed?*
+GridPulse pulls half-hourly GB settlement prices from Elexon (polled every minute), de-rated margin forecasts from Elexon (every 5 minutes), carbon intensity and generation mix from NESO (every 5 minutes) and weather from Open-Meteo (every 15 minutes). It streams them through Redpanda into TimescaleDB, and every 60 seconds turns them into three commercial signals: **price cap headroom**, a **market stress index** and the **spark spread**. The dashboard is built for supplier risk teams and trading desks. It answers one question: *are we currently buying power for more than the price cap lets us charge for it, and is the grid getting more or less stressed?*
 
 **Proof it runs:** every screenshot in [Screenshots](#screenshots) comes from a live local run against real UK grid data, with all four consumers at zero lag.
 
@@ -34,7 +34,7 @@ How much the price of electricity and gas has changed currently, compared to the
 
 ### 2. Market stress index
 
-A composite 0-100 gauge blending four real-time stress signals: System Buy/Sell spread (National Grid ESO paying a premium for power = scarcity), Net Imbalance Volume anomalies, 24-hour price volatility, and wind generation shortfall vs baseline. Traders watch these the way equity traders watch volatility indices.
+A composite 0-100 gauge blending four real-time stress signals: de-rated margin tightness (NESO's forecast of spare capacity once every unit is discounted by its expected availability -- the number behind Electricity Margin Notices), Net Imbalance Volume anomalies, 24-hour price volatility, and wind generation shortfall vs baseline. Traders watch these the way equity traders watch volatility indices.
 
 ### 3. Spark spread
 
@@ -47,13 +47,14 @@ Electricity price minus gas-to-power cost at typical CCGT efficiency (~49%). Pos
 ```mermaid
 flowchart LR
     subgraph Sources["Data sources (free, no key)"]
-        ELEXON["Elexon BMRS<br/>system prices"]
+        ELEXON["Elexon BMRS<br/>system prices + de-rated margin"]
         NESO["NESO Carbon Intensity<br/>intensity + generation mix"]
         METEO["Open-Meteo<br/>wind / temp / solar"]
     end
 
     subgraph Ingestion["Producers (Python)"]
         P1[system_prices_producer]
+        P5[derated_margin_producer]
         P2[carbon_intensity_producer]
         P3[generation_mix_producer]
         P4[weather_producer]
@@ -61,6 +62,7 @@ flowchart LR
 
     subgraph Broker["Redpanda (Kafka API)"]
         T1[(system-prices)]
+        T5[(derated-margin)]
         T2[(carbon-intensity)]
         T3[(generation-mix)]
         T4[(weather)]
@@ -80,10 +82,11 @@ flowchart LR
     GRAF["Grafana<br/>terminal dashboard"]
 
     ELEXON --> P1 --> T1
+    ELEXON --> P5 --> T5
     NESO --> P2 --> T2
     NESO --> P3 --> T3
     METEO --> P4 --> T4
-    T1 & T2 & T3 & T4 --> C1
+    T1 & T2 & T3 & T4 & T5 --> C1
     C1 -- invalid --> DLQ
     C1 --> DB
     DB --> CALC --> M --> GRAF
@@ -114,7 +117,7 @@ Each producer polls its API and publishes one JSON message per record to its own
 
 **System price as a wholesale proxy.** Headroom and spark spread use the Elexon system (imbalance) price, because it is free and needs no API key. Imbalance prices are far more volatile than the day-ahead and forward prices suppliers actually hedge against. Over the captured week, 77% of settlement periods sat above the assumed allowance, so the headroom light reads red most of the time. That overstates how much stress suppliers are under. In production, headroom would be computed against Elexon Market Index Data or the N2EX day-ahead auction, with the system price kept as a separate scarcity signal.
 
-**Pipelines run on the host.** Producers, consumers and the metrics engine run as nine separate Python processes on the host machine. That gives fast edit-and-rerun cycles without rebuilding containers. The cost is that nothing restarts a crashed process, and pipeline health only shows a stalled stream after 15 minutes. In production, each would run as its own container with a restart policy (or a Kubernetes Deployment), with liveness probes and alerting on consumer lag.
+**Pipelines run on the host.** Producers, consumers and the metrics engine run as eleven separate Python processes on the host machine. That gives fast edit-and-rerun cycles without rebuilding containers. The cost is that nothing restarts a crashed process, and pipeline health only shows a stalled stream after 15 minutes. In production, each would run as its own container with a restart policy (or a Kubernetes Deployment), with liveness probes and alerting on consumer lag.
 
 **Hand-maintained Ofgem assumptions.** Ofgem publishes the cap model as Excel files, not an API, so the allowance, gas price and wind baseline are seeded by hand into `reference_data`. When a new quarter starts and nobody updates them, every headroom figure is quietly wrong. In production, a scheduled job would download and parse each new cap model, and the dashboard would flag reference values older than one quarter.
 
@@ -133,7 +136,7 @@ Every threshold below is checked against the 364 settlement periods captured fro
 | Threshold | Value | What the captured week showed | Production approach |
 |---|---|---|---|
 | Headroom traffic light | red < 0%, amber 0-10%, green > 10% vs a £75/MWh allowance | Sell price ranged from -£13 to £298/MWh (median £129). 77% of periods were above £75 | Compare against day-ahead prices, and refresh the allowance from each quarterly Ofgem cap model |
-| Stress: buy/sell spread (35% weight, saturates at £300) | spread = buy - sell | **Buy = sell in 100% of periods.** GB has used a single imbalance price since 2015 (P305), so this component always reads 0 | Replace it with Loss of Load Probability or de-rated margin from BMRS |
+| Stress: de-rated margin (35% weight) | 0 at 20 GW or more, 100 at 2 GW or less, linear between. 1-hour-ahead BMRS forecast for the period in delivery | Margin ranged 7.1-31.0 GW (median 21.4 GW) over 337 periods. 37% of periods scored above 0, peaking at 72 on the 11 Oct evening peak. Loss of load probability was 0 in every period, so it is stored but not scored. This replaced a buy/sell spread component that always read 0 under single imbalance pricing (P305, 2015) | Calibrate the band per season against winter margins, and blend in LOLP once it starts registering |
 | Stress: net imbalance volume (25%, saturates at 3,000 MWh) | \|NIV\| | 95th percentile 629 MWh, maximum 2,366 MWh. The scale is never reached | Use rolling percentiles instead of a fixed ceiling |
 | Stress: 24h volatility (25%, saturates at £150) | std dev of sell price | £52 over the last 24h, £69 across the week | Same: a rolling percentile |
 | Stress: wind shortfall (15%) | below a 30% baseline | Wind averaged 47.6% of generation (range 4.7-71.1%), so the baseline is set too low for autumn | Use a seasonal baseline or the NESO wind forecast |
@@ -147,6 +150,7 @@ Every threshold below is checked against the 364 settlement periods captured fro
 | Source | Data | Granularity | Key needed? |
 |---|---|---|---|
 | Elexon BMRS | System Buy/Sell prices, net imbalance volume | Half-hourly | No |
+| Elexon BMRS (LOLPDRM) | De-rated margin + loss of load probability, 1-12 hours ahead | Half-hourly | No |
 | NESO Carbon Intensity | GB carbon intensity + generation mix by fuel | Half-hourly | No |
 | Open-Meteo | Wind at 100m, temperature, solar radiation | Hourly | No |
 | Ofgem | Price cap assumptions (reference data) | Quarterly | N/A -- published as Excel files, seeded into `reference_data` |
@@ -212,11 +216,12 @@ All captured from a local run against live, real UK grid data (7-day backfill pl
    ```powershell
    python scripts/backfill.py
    ```
-   You should see about 360 system-price, 340 carbon-intensity, 3,000 generation-mix and 190 weather records produced.
+   You should see about 360 system-price, 1,700 de-rated-margin, 340 carbon-intensity, 3,000 generation-mix and 190 weather records produced.
 
 5. Start the consumers (each in its own terminal). They land the backfill straight away:
    ```powershell
    python consumers/system_prices_consumer.py
+   python consumers/derated_margin_consumer.py
    python consumers/carbon_intensity_consumer.py
    python consumers/generation_mix_consumer.py
    python consumers/weather_consumer.py
@@ -225,6 +230,7 @@ All captured from a local run against live, real UK grid data (7-day backfill pl
 6. Start the live producers and the metrics engine (each in its own terminal):
    ```powershell
    python producers/system_prices_producer.py
+   python producers/derated_margin_producer.py
    python producers/carbon_intensity_producer.py
    python producers/generation_mix_producer.py
    python producers/weather_producer.py
@@ -236,7 +242,7 @@ All captured from a local run against live, real UK grid data (7-day backfill pl
    | Surface | URL | What you should see |
    |---|---|---|
    | Grafana | http://localhost:3000 | The GridPulse dashboard, with all 8 panels populated |
-   | Redpanda Console | http://localhost:8080 | 4 topics. Under Consumer Groups, 4 stable groups with zero lag |
+   | Redpanda Console | http://localhost:8080 | 5 topics. Under Consumer Groups, 5 stable groups with zero lag |
 
 **Note:** step 4 is optional but recommended. Without it, the live producers only fetch the current day, so the charts build up history slowly.
 
@@ -272,9 +278,9 @@ gridpulse/
 ## Known gaps and future improvements
 
 - **No day-ahead price feed.** Headroom is measured against volatile imbalance prices, so it overstates supplier stress. Next step: Elexon Market Index Data, or ENTSO-E day-ahead prices once an API token arrives.
-- **The stress index has a dead component.** Single imbalance pricing makes the buy/sell spread permanently zero, so 35% of the index never moves. Next step: replace it with Loss of Load Probability from BMRS.
+- **Stress thresholds are fixed, not seasonal.** The de-rated margin band (20 GW to 2 GW) and the NIV and volatility ceilings were set from one October week, and LOLP is stored but not yet scored because it read 0 in every period. Next step: rolling percentiles per season, and blend LOLP into the margin component once winter data shows it moving.
 - **No process supervision.** A crashed producer or consumer stays down until someone notices it on the pipeline health panel. Next step: containerise the pipelines with restart policies and alert on consumer lag.
-- **No CI.** The 26 domain and validation tests only run when someone remembers to run them, so a regression in the headroom maths could ship silently. Next step: a GitHub Actions workflow on every push.
+- **No CI.** The 37 domain and validation tests only run when someone remembers to run them, so a regression in the headroom maths could ship silently. Next step: a GitHub Actions workflow on every push.
 - **No schema enforcement.** An upstream field rename would only be caught after the fact, in the DLQ. Next step: Avro schemas in Redpanda's Schema Registry.
 - **No what-if tooling.** Suppliers can't yet test how headroom would move under a different cap or gas price. Next step: a Streamlit scenario explorer.
 

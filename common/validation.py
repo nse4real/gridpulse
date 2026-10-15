@@ -12,6 +12,9 @@ Range rationale (UK market domain knowledge):
 - Carbon intensity: GB grid has ranged roughly 0-500 gCO2/kWh historically.
   0-600 leaves headroom without accepting garbage.
 - Generation mix: percentages are 0-100 and the mix should sum to ~100%.
+- De-rated margin: NESO's spare-capacity forecast. GB peak demand is ~45-60 GW,
+  so a margin above 60,000 MW is implausible; it can in principle go slightly
+  negative in a genuine shortfall. Loss of load probability is a probability.
 - Weather: UK extremes are within -30..45 C, 0-80 m/s wind at 100m hub height,
   0-1400 W/m2 shortwave radiation.
 """
@@ -20,6 +23,9 @@ MAX_PRICE_GBP_MWH = 9999.0
 MIN_PRICE_GBP_MWH = -500.0  # negative prices are valid but noteworthy
 MAX_CARBON_GCO2_KWH = 600
 MAX_SETTLEMENT_PERIOD = 50  # 48 normal + 2 extra on clock-change days
+MIN_DERATED_MARGIN_MW = -10_000
+MAX_DERATED_MARGIN_MW = 60_000
+MAX_FORECAST_HORIZON_H = 24  # BMRS publishes 1, 2, 4, 8 and 12 hours ahead
 
 
 class ValidationError(Exception):
@@ -57,6 +63,23 @@ def validate_system_price(record):
                  MIN_PRICE_GBP_MWH, MAX_PRICE_GBP_MWH)
     _check_range(errors, record, "system_sell_price",
                  MIN_PRICE_GBP_MWH, MAX_PRICE_GBP_MWH)
+    return errors
+
+
+def validate_derated_margin(record):
+    """Validate a de-rated margin / LOLP forecast message."""
+    errors = [f"missing field: {f}" for f in _require(
+        ["settlement_date", "settlement_period", "start_time",
+         "forecast_horizon", "derated_margin_mw", "ingested_at"], record)]
+
+    sp = record.get("settlement_period")
+    if sp is not None and not (1 <= int(sp) <= MAX_SETTLEMENT_PERIOD):
+        errors.append(f"settlement_period={sp} outside [1, {MAX_SETTLEMENT_PERIOD}]")
+
+    _check_range(errors, record, "forecast_horizon", 1, MAX_FORECAST_HORIZON_H)
+    _check_range(errors, record, "derated_margin_mw",
+                 MIN_DERATED_MARGIN_MW, MAX_DERATED_MARGIN_MW)
+    _check_range(errors, record, "loss_of_load_probability", 0, 1)
     return errors
 
 

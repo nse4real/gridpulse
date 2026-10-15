@@ -13,11 +13,16 @@ natural keys.
 import argparse
 import json
 import os
+import sys
 from datetime import datetime, timedelta, timezone
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import requests
 from confluent_kafka import Producer
 from dotenv import load_dotenv
+
+from producers.derated_margin_producer import fetch_window, message_key, to_message
 
 load_dotenv()
 
@@ -53,6 +58,23 @@ def backfill_system_prices(producer, days):
                 value=json.dumps(message),
             )
             total += 1
+    return total
+
+
+def backfill_derated_margin(producer, days):
+    # BMRS caps this endpoint at 7 days per request, so walk it in 6-day chunks.
+    now = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
+    cursor = now - timedelta(days=days)
+    end = now + timedelta(hours=13)  # forecasts run up to 12 hours ahead
+    total = 0
+    while cursor < end:
+        chunk_end = min(cursor + timedelta(days=6), end)
+        for record in fetch_window(cursor, chunk_end):
+            message = to_message(record)
+            producer.produce("derated-margin", key=message_key(message),
+                             value=json.dumps(message))
+            total += 1
+        cursor = chunk_end
     return total
 
 
@@ -140,6 +162,7 @@ def main():
     producer = Producer({"bootstrap.servers": KAFKA_BROKER})
     for name, fn in [
         ("system-prices", backfill_system_prices),
+        ("derated-margin", backfill_derated_margin),
         ("carbon-intensity", backfill_carbon_intensity),
         ("generation-mix", backfill_generation_mix),
         ("weather", backfill_weather),

@@ -48,7 +48,7 @@
       "id": 2,
       "type": "gauge",
       "title": "Market stress index",
-      "description": "Composite of buy/sell spread, imbalance volume, price volatility and wind shortfall. 0 = calm, 100 = severe stress.",
+      "description": "Composite of de-rated margin tightness (35%: NESO spare-capacity forecast, 0 at 20 GW+, 100 at 2 GW or less), imbalance volume (25%), 24h price volatility (25%) and wind shortfall (15%). 0 = calm, 100 = severe stress.",
       "gridPos": { "x": 6, "y": 0, "w": 6, "h": 6 },
       "datasource": { "type": "grafana-postgresql-datasource", "uid": "TimescaleDB" },
       "targets": [{
@@ -267,7 +267,7 @@
         "refId": "A",
         "format": "table",
         "rawQuery": true,
-        "rawSql": "SELECT 'system_prices' AS stream, MAX(ingested_at) AS last_seen, ROUND(EXTRACT(EPOCH FROM (now() - MAX(ingested_at)))/60, 1) AS age_minutes FROM system_prices UNION ALL SELECT 'carbon_intensity', MAX(ingested_at), ROUND(EXTRACT(EPOCH FROM (now() - MAX(ingested_at)))/60, 1) FROM carbon_intensity UNION ALL SELECT 'generation_mix', MAX(ingested_at), ROUND(EXTRACT(EPOCH FROM (now() - MAX(ingested_at)))/60, 1) FROM generation_mix UNION ALL SELECT 'weather', MAX(ingested_at), ROUND(EXTRACT(EPOCH FROM (now() - MAX(ingested_at)))/60, 1) FROM weather UNION ALL SELECT 'market_metrics', MAX(metric_ts), ROUND(EXTRACT(EPOCH FROM (now() - MAX(metric_ts)))/60, 1) FROM market_metrics ORDER BY stream"
+        "rawSql": "SELECT 'system_prices' AS stream, MAX(ingested_at) AS last_seen, ROUND(EXTRACT(EPOCH FROM (now() - MAX(ingested_at)))/60, 1) AS age_minutes FROM system_prices UNION ALL SELECT 'derated_margin', MAX(ingested_at), ROUND(EXTRACT(EPOCH FROM (now() - MAX(ingested_at)))/60, 1) FROM derated_margin UNION ALL SELECT 'carbon_intensity', MAX(ingested_at), ROUND(EXTRACT(EPOCH FROM (now() - MAX(ingested_at)))/60, 1) FROM carbon_intensity UNION ALL SELECT 'generation_mix', MAX(ingested_at), ROUND(EXTRACT(EPOCH FROM (now() - MAX(ingested_at)))/60, 1) FROM generation_mix UNION ALL SELECT 'weather', MAX(ingested_at), ROUND(EXTRACT(EPOCH FROM (now() - MAX(ingested_at)))/60, 1) FROM weather UNION ALL SELECT 'market_metrics', MAX(metric_ts), ROUND(EXTRACT(EPOCH FROM (now() - MAX(metric_ts)))/60, 1) FROM market_metrics ORDER BY stream"
       }],
       "fieldConfig": {
         "defaults": {},

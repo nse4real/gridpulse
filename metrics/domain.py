@@ -64,27 +64,49 @@ def _cap_0_100(value, scale_max):
     return max(0.0, min(100.0, value / scale_max * 100))
 
 
-def market_stress_index(buy_sell_spread_gbp, abs_niv_mwh,
+MARGIN_COMFORTABLE_MW = 20_000.0  # roughly the median October de-rated margin
+MARGIN_TIGHT_MW = 2_000.0  # LOLP starts to register around here
+
+
+def margin_tightness_score(derated_margin_mw):
+    """0-100 score for how tight the GB de-rated margin is.
+
+    De-rated margin is NESO's forecast of spare capacity after discounting
+    each unit by its expected availability -- the same number behind
+    Electricity Margin Notices. At or above 20 GW the system is comfortable
+    (score 0); at or below 2 GW scarcity is close (score 100). Linear between.
+    Returns 0 when no forecast is available.
+    """
+    if derated_margin_mw is None:
+        return 0.0
+    tightness = MARGIN_COMFORTABLE_MW - derated_margin_mw
+    return _cap_0_100(tightness, MARGIN_COMFORTABLE_MW - MARGIN_TIGHT_MW)
+
+
+def market_stress_index(derated_margin_mw, abs_niv_mwh,
                         price_volatility_gbp, wind_shortfall_pct_value):
     """Composite 0-100 gauge of real-time grid stress.
 
     Weighted blend of four signals traders watch:
-    - System buy/sell spread (35%): ESO paying a premium for power = scarcity
+    - De-rated margin tightness (35%): how little spare capacity NESO forecasts
     - Net imbalance volume (25%): how far the grid missed supply/demand balance
     - Price volatility over 24h (25%): instability in settlement prices
     - Wind shortfall vs baseline (15%): weather-driven supply gap
+
+    The margin replaced a system buy/sell spread component: GB has used a
+    single imbalance price since 2015 (BSC P305), so that spread is always 0.
     """
-    spread_score = _cap_0_100(buy_sell_spread_gbp, 300.0)
+    margin_score = margin_tightness_score(derated_margin_mw)
     niv_score = _cap_0_100(abs_niv_mwh, 3000.0)
     vol_score = _cap_0_100(price_volatility_gbp, 150.0)
     wind_score = _cap_0_100(wind_shortfall_pct_value, 100.0)
 
-    index = (0.35 * spread_score + 0.25 * niv_score
+    index = (0.35 * margin_score + 0.25 * niv_score
              + 0.25 * vol_score + 0.15 * wind_score)
     return {
         "index": round(index, 1),
         "components": {
-            "buy_sell_spread": round(spread_score, 1),
+            "margin_tightness": round(margin_score, 1),
             "net_imbalance_volume": round(niv_score, 1),
             "price_volatility": round(vol_score, 1),
             "wind_shortfall": round(wind_score, 1),

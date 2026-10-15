@@ -15,6 +15,7 @@ producer:  ## Stream live Elexon system prices into Redpanda
 
 producers-all:  ## Stream all sources (run each in its own terminal)
 	python producers/system_prices_producer.py & \
+	python producers/derated_margin_producer.py & \
 	python producers/carbon_intensity_producer.py & \
 	python producers/generation_mix_producer.py & \
 	python producers/weather_producer.py & \
