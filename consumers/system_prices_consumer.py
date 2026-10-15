@@ -1,14 +1,22 @@
 import json
+import sys
+import os
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+
 import psycopg2
-from confluent_kafka import Consumer, KafkaError
+from confluent_kafka import Consumer, Producer, KafkaError
 from dotenv import load_dotenv
 from datetime import datetime, timezone
-import os
+
+from common.validation import validate_system_price
+from common.dlq import send_to_dlq
 
 load_dotenv()
 
 KAFKA_BROKER = os.getenv("KAFKA_BROKER", "localhost:19092")
 TOPIC = "system-prices"
+DLQ_TOPIC = "system-prices-dlq"
 GROUP_ID = "system-prices-consumer"
 
 DB_CONFIG = {
@@ -72,6 +80,7 @@ def main():
         "group.id": GROUP_ID,
         "auto.offset.reset": "earliest",
     })
+    dlq_producer = Producer({"bootstrap.servers": KAFKA_BROKER})
     consumer.subscribe([TOPIC])
     print(f"Consuming from {TOPIC}...")
 
@@ -86,7 +95,20 @@ def main():
                 print(f"Consumer error: {msg.error()}")
                 continue
 
-            record = json.loads(msg.value().decode("utf-8"))
+            raw = msg.value().decode("utf-8")
+            try:
+                record = json.loads(raw)
+            except json.JSONDecodeError:
+                send_to_dlq(dlq_producer, DLQ_TOPIC, raw, ["invalid JSON"])
+                print("Quarantined malformed JSON to DLQ")
+                continue
+
+            errors = validate_system_price(record)
+            if errors:
+                send_to_dlq(dlq_producer, DLQ_TOPIC, record, errors)
+                print(f"Quarantined invalid record to DLQ: {errors}")
+                continue
+
             insert_record(conn, record)
             print(f"Stored: {record['settlement_date']} SP{record['settlement_period']} "
                   f"Buy={record['system_buy_price']} Sell={record['system_sell_price']}")
