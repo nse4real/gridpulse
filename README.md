@@ -6,6 +6,12 @@ An open-source energy market monitoring platform streaming UK grid data through 
 
 ![GridPulse Grafana dashboard -- 7 days of live UK grid data](docs/screenshots/grafana-dashboard.png)
 
+## Overview
+
+GridPulse pulls half-hourly GB settlement prices from Elexon (polled every minute), carbon intensity and generation mix from NESO (every 5 minutes) and weather from Open-Meteo (every 15 minutes). It streams them through Redpanda into TimescaleDB, and every 60 seconds turns them into three commercial signals: **price cap headroom**, a **market stress index** and the **spark spread**. The dashboard is built for supplier risk teams and trading desks. It answers one question: *are we currently buying power for more than the price cap lets us charge for it, and is the grid getting more or less stressed?*
+
+**Proof it runs:** every screenshot in [Screenshots](#screenshots) comes from a live local run against real UK grid data, with all four consumers at zero lag.
+
 ---
 
 ## The problem
@@ -84,7 +90,11 @@ flowchart LR
     DB --> GRAF
 ```
 
-### Stack decisions and trade-offs
+### Data flow
+
+Each producer polls its API and publishes one JSON message per record to its own Redpanda topic. The message is keyed on the record's natural identity, for example `2026-10-15-27` for settlement period 27. Each consumer validates every message against domain-informed ranges. Valid records are upserted into a TimescaleDB hypertable, so Elexon's retrospective revisions overwrite earlier values instead of duplicating them. Invalid records go to `<topic>-dlq` with the reasons attached. This is the bronze-to-silver step. Every 60 seconds the metrics engine reads the latest silver data and the quarterly Ofgem assumptions in `reference_data`. It runs the pure functions in `metrics/domain.py` and writes the results to `market_metrics`, the gold layer. Grafana reads silver for the charts and gold for the headline signals.
+
+### Stack decisions
 
 | Component | Choice | Why |
 |---|---|---|
@@ -98,11 +108,37 @@ flowchart LR
 
 **Networking note:** Redpanda runs dual listeners -- containers use `redpanda:9092`, host processes use `localhost:19092`.
 
+### Trade-offs and production considerations
+
+**Single broker.** The local stack runs one Redpanda broker with replication factor 1, which keeps the whole platform inside 512MB on a laptop. If that broker dies, ingestion stops and any messages not yet consumed are lost. A production deployment would run a 3-broker cluster with replication factor 3. It would then survive a broker failure without losing data, and consumer groups would rebalance automatically.
+
+**System price as a wholesale proxy.** Headroom and spark spread use the Elexon system (imbalance) price, because it is free and needs no API key. Imbalance prices are far more volatile than the day-ahead and forward prices suppliers actually hedge against. Over the captured week, 77% of settlement periods sat above the assumed allowance, so the headroom light reads red most of the time. That overstates how much stress suppliers are under. In production, headroom would be computed against Elexon Market Index Data or the N2EX day-ahead auction, with the system price kept as a separate scarcity signal.
+
+**Pipelines run on the host.** Producers, consumers and the metrics engine run as nine separate Python processes on the host machine. That gives fast edit-and-rerun cycles without rebuilding containers. The cost is that nothing restarts a crashed process, and pipeline health only shows a stalled stream after 15 minutes. In production, each would run as its own container with a restart policy (or a Kubernetes Deployment), with liveness probes and alerting on consumer lag.
+
+**Hand-maintained Ofgem assumptions.** Ofgem publishes the cap model as Excel files, not an API, so the allowance, gas price and wind baseline are seeded by hand into `reference_data`. When a new quarter starts and nobody updates them, every headroom figure is quietly wrong. In production, a scheduled job would download and parse each new cap model, and the dashboard would flag reference values older than one quarter.
+
+**JSON without a schema.** Messages are plain JSON, so a field renamed upstream would only surface as a DLQ spike after it happened. Registering Avro schemas in Redpanda's built-in Schema Registry, with backward-compatibility checks, would reject breaking changes when the message is produced instead.
+
 ### Data quality and reliability
 
 - **Dead letter queues:** every consumer validates messages against domain-informed ranges (e.g. GB prices can legitimately go negative on windy nights but not to £15,000/MWh). Failures are quarantined to `<topic>-dlq` with their validation errors attached -- visible, never silently dropped.
 - **Idempotent writes:** `ON CONFLICT DO UPDATE` everywhere, because Elexon revises settlement data retrospectively and NESO revises forecasts into actuals. Latest value always wins.
 - **Continuous aggregates:** hourly/daily rollups refresh incrementally, so dashboards stay fast as history grows.
+
+### Threshold calibration
+
+Every threshold below is checked against the 364 settlement periods captured from 8 to 15 October 2026 (`python scripts/backfill.py`, then SQL over the hypertables):
+
+| Threshold | Value | What the captured week showed | Production approach |
+|---|---|---|---|
+| Headroom traffic light | red < 0%, amber 0-10%, green > 10% vs a £75/MWh allowance | Sell price ranged from -£13 to £298/MWh (median £129). 77% of periods were above £75 | Compare against day-ahead prices, and refresh the allowance from each quarterly Ofgem cap model |
+| Stress: buy/sell spread (35% weight, saturates at £300) | spread = buy - sell | **Buy = sell in 100% of periods.** GB has used a single imbalance price since 2015 (P305), so this component always reads 0 | Replace it with Loss of Load Probability or de-rated margin from BMRS |
+| Stress: net imbalance volume (25%, saturates at 3,000 MWh) | \|NIV\| | 95th percentile 629 MWh, maximum 2,366 MWh. The scale is never reached | Use rolling percentiles instead of a fixed ceiling |
+| Stress: 24h volatility (25%, saturates at £150) | std dev of sell price | £52 over the last 24h, £69 across the week | Same: a rolling percentile |
+| Stress: wind shortfall (15%) | below a 30% baseline | Wind averaged 47.6% of generation (range 4.7-71.1%), so the baseline is set too low for autumn | Use a seasonal baseline or the NESO wind forecast |
+| Price validation (DLQ) | -£500 to £9,999/MWh | 11 negative-price periods (minimum -£13.30), all accepted correctly. Zero records went to the DLQ | Keep. Wide enough for scarcity spikes, tight enough to catch unit errors |
+| Pipeline freshness | amber 15 min, red 60 min | The slowest feed (weather) polls every 15 minutes, so it is never falsely amber | Set a threshold per stream, based on each source's publishing cadence |
 
 ---
 
@@ -126,7 +162,7 @@ All captured from a local run against live, real UK grid data (7-day backfill pl
 ![Grafana dashboard](docs/screenshots/grafana-dashboard.png)
 
 - **Top row -- the commercial signals.** Price cap headroom (red: suppliers are buying power above what Ofgem's cap assumes), market stress gauge, spark spread (green: gas-fired generation is profitable right now) and live carbon intensity.
-- **System buy / sell prices** -- every half-hourly settlement period from Elexon BMRS. Since the 2015 move to a single imbalance price the two lines usually coincide; spikes are grid scarcity events.
+- **System buy / sell prices** -- every half-hourly settlement period from Elexon BMRS. Since the 2015 move to a single imbalance price the two lines are identical, so only one is visible. Spikes are grid scarcity events, and the dips below £0 are windy nights.
 - **Generation mix** -- share of GB demand met by each fuel, stacked to 100%. Wind-heavy periods (blue) line up with the price troughs on the left -- over the captured week, wind share and system price correlate at -0.52.
 - **Weather drivers** -- wind speed at 100m hub height and temperature, the two weather variables that move UK power prices.
 - **Pipeline health** -- minutes since each stream last landed a row; amber after 15, red after 60.
@@ -142,44 +178,67 @@ All captured from a local run against live, real UK grid data (7-day backfill pl
 
 ## Getting started
 
-**Prerequisites:** Docker Desktop, Python 3.12+.
+### Prerequisites
 
-```powershell
-git clone https://github.com/nse4real/gridpulse.git
-cd gridpulse
-cp .env.example .env   # fill in values
-python -m venv venv
-venv\Scripts\activate
-pip install -r requirements.txt
+- **Docker Desktop** (with Docker Compose v2)
+- **Python** 3.12+
+- About 2GB of free RAM for the stack
 
-# Start Redpanda, TimescaleDB, Grafana
-docker compose up -d
+### Quick start (Windows PowerShell)
 
-# Seed reference data and continuous aggregates
-type sql\001_reference_data.sql | docker exec -i timescaledb psql -U gridpulse -d gridpulse
-type sql\002_continuous_aggregates.sql | docker exec -i timescaledb psql -U gridpulse -d gridpulse
+1. Clone, configure and install:
+   ```powershell
+   git clone https://github.com/nse4real/gridpulse.git
+   cd gridpulse
+   cp .env.example .env   # fill in values
+   python -m venv venv
+   venv\Scripts\activate
+   pip install -r requirements.txt
+   ```
 
-# Optional: backfill the last 7 days so the charts have history
-python scripts/backfill.py
+2. Start Redpanda, TimescaleDB, Grafana and Redpanda Console:
+   ```powershell
+   docker compose up -d
+   ```
+   Wait about 20 seconds for TimescaleDB to accept connections.
 
-# Run pipelines (each in its own terminal)
-python producers/system_prices_producer.py
-python producers/carbon_intensity_producer.py
-python producers/generation_mix_producer.py
-python producers/weather_producer.py
-python consumers/system_prices_consumer.py
-python consumers/carbon_intensity_consumer.py
-python consumers/generation_mix_consumer.py
-python consumers/weather_consumer.py
-python metrics/calculator.py
-```
+3. Seed the Ofgem reference data and continuous aggregates (one-time setup):
+   ```powershell
+   type sql\001_reference_data.sql | docker exec -i timescaledb psql -U gridpulse -d gridpulse
+   type sql\002_continuous_aggregates.sql | docker exec -i timescaledb psql -U gridpulse -d gridpulse
+   ```
 
-Then open:
+4. Load the last 7 days of history so the charts have something to show (one-time setup):
+   ```powershell
+   python scripts/backfill.py
+   ```
+   You should see about 360 system-price, 340 carbon-intensity, 3,000 generation-mix and 190 weather records produced.
 
-| Surface | URL |
-|---|---|
-| Grafana dashboard | http://localhost:3000 |
-| Redpanda Console (topics, DLQ inspection) | http://localhost:8080 |
+5. Start the consumers (each in its own terminal). They land the backfill straight away:
+   ```powershell
+   python consumers/system_prices_consumer.py
+   python consumers/carbon_intensity_consumer.py
+   python consumers/generation_mix_consumer.py
+   python consumers/weather_consumer.py
+   ```
+
+6. Start the live producers and the metrics engine (each in its own terminal):
+   ```powershell
+   python producers/system_prices_producer.py
+   python producers/carbon_intensity_producer.py
+   python producers/generation_mix_producer.py
+   python producers/weather_producer.py
+   python metrics/calculator.py
+   ```
+
+7. Open the dashboards:
+
+   | Surface | URL | What you should see |
+   |---|---|---|
+   | Grafana | http://localhost:3000 | The GridPulse dashboard, with all 8 panels populated |
+   | Redpanda Console | http://localhost:8080 | 4 topics. Under Consumer Groups, 4 stable groups with zero lag |
+
+**Note:** step 4 is optional but recommended. Without it, the live producers only fetch the current day, so the charts build up history slowly.
 
 Run the tests:
 
@@ -187,7 +246,7 @@ Run the tests:
 python -m pytest tests/ -v
 ```
 
-Or use the Makefile shortcuts (`make up`, `make test`, `make metrics`).
+Or use the Makefile shortcuts (`make up`, `make backfill`, `make test`, `make metrics`).
 
 ---
 
@@ -210,13 +269,14 @@ gridpulse/
 
 ---
 
-## Roadmap
+## Known gaps and future improvements
 
-- [ ] ENTSO-E producer (pan-European prices, interconnector flows) -- needs API token
-- [ ] Elexon Market Index Data for true day-ahead wholesale prices (headroom currently uses system sell price as a documented proxy)
-- [ ] Avro serialisation via Redpanda's built-in Schema Registry
-- [ ] GitHub Actions CI running the data-quality test suite on every push
-- [ ] Streamlit what-if explorer for price cap scenarios
+- **No day-ahead price feed.** Headroom is measured against volatile imbalance prices, so it overstates supplier stress. Next step: Elexon Market Index Data, or ENTSO-E day-ahead prices once an API token arrives.
+- **The stress index has a dead component.** Single imbalance pricing makes the buy/sell spread permanently zero, so 35% of the index never moves. Next step: replace it with Loss of Load Probability from BMRS.
+- **No process supervision.** A crashed producer or consumer stays down until someone notices it on the pipeline health panel. Next step: containerise the pipelines with restart policies and alert on consumer lag.
+- **No CI.** The 26 domain and validation tests only run when someone remembers to run them, so a regression in the headroom maths could ship silently. Next step: a GitHub Actions workflow on every push.
+- **No schema enforcement.** An upstream field rename would only be caught after the fact, in the DLQ. Next step: Avro schemas in Redpanda's Schema Registry.
+- **No what-if tooling.** Suppliers can't yet test how headroom would move under a different cap or gas price. Next step: a Streamlit scenario explorer.
 
 ## Licence
 
