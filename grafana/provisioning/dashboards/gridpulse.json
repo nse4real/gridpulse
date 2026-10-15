@@ -1,0 +1,291 @@
+{
+  "uid": "gridpulse-main",
+  "title": "GridPulse -- UK Energy Market Intelligence",
+  "tags": ["gridpulse", "energy"],
+  "timezone": "browser",
+  "refresh": "30s",
+  "time": { "from": "now-24h", "to": "now" },
+  "schemaVersion": 39,
+  "version": 1,
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Price cap headroom",
+      "description": "Live wholesale price vs Ofgem's assumed allowance. Red = suppliers buying above the cap assumption.",
+      "gridPos": { "x": 0, "y": 0, "w": 6, "h": 6 },
+      "datasource": { "type": "postgres", "uid": "TimescaleDB" },
+      "targets": [{
+        "refId": "A",
+        "format": "table",
+        "rawQuery": true,
+        "rawSql": "SELECT metric_value AS headroom_pct FROM market_metrics WHERE metric_name = 'price_cap_headroom_pct' ORDER BY metric_ts DESC LIMIT 1"
+      }],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "orange", "value": 0 },
+              { "color": "green", "value": 10 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "auto"
+      }
+    },
+    {
+      "id": 2,
+      "type": "gauge",
+      "title": "Market stress index",
+      "description": "Composite of buy/sell spread, imbalance volume, price volatility and wind shortfall. 0 = calm, 100 = severe stress.",
+      "gridPos": { "x": 6, "y": 0, "w": 6, "h": 6 },
+      "datasource": { "type": "postgres", "uid": "TimescaleDB" },
+      "targets": [{
+        "refId": "A",
+        "format": "table",
+        "rawQuery": true,
+        "rawSql": "SELECT metric_value AS stress FROM market_metrics WHERE metric_name = 'market_stress_index' ORDER BY metric_ts DESC LIMIT 1"
+      }],
+      "fieldConfig": {
+        "defaults": {
+          "min": 0,
+          "max": 100,
+          "unit": "none",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "orange", "value": 40 },
+              { "color": "red", "value": 70 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "showThresholdLabels": false,
+        "showThresholdMarkers": true
+      }
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Spark spread",
+      "description": "Electricity price minus gas-to-power cost. Positive = profitable to generate from gas.",
+      "gridPos": { "x": 12, "y": 0, "w": 6, "h": 6 },
+      "datasource": { "type": "postgres", "uid": "TimescaleDB" },
+      "targets": [{
+        "refId": "A",
+        "format": "table",
+        "rawQuery": true,
+        "rawSql": "SELECT metric_value AS spark_spread FROM market_metrics WHERE metric_name = 'spark_spread_gbp_mwh' ORDER BY metric_ts DESC LIMIT 1"
+      }],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyGBP",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "green", "value": 0 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "auto"
+      }
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Carbon intensity now",
+      "description": "GB grid carbon intensity, gCO2/kWh.",
+      "gridPos": { "x": 18, "y": 0, "w": 6, "h": 6 },
+      "datasource": { "type": "postgres", "uid": "TimescaleDB" },
+      "targets": [{
+        "refId": "A",
+        "format": "table",
+        "rawQuery": true,
+        "rawSql": "SELECT COALESCE(intensity_actual, intensity_forecast) AS intensity FROM carbon_intensity ORDER BY from_ts DESC LIMIT 1"
+      }],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "orange", "value": 150 },
+              { "color": "red", "value": 300 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "auto"
+      }
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "System buy / sell prices",
+      "description": "Half-hourly settlement prices from Elexon BMRS. Spikes in buy price = grid scarcity events.",
+      "gridPos": { "x": 0, "y": 6, "w": 12, "h": 8 },
+      "datasource": { "type": "postgres", "uid": "TimescaleDB" },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT (settlement_date::timestamptz + (settlement_period - 1) * interval '30 minutes') AS \"time\", system_buy_price AS \"buy\", system_sell_price AS \"sell\" FROM system_prices ORDER BY 1"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyGBP",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "spanNulls": true
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "none" }
+      }
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Generation mix by fuel",
+      "description": "Share of GB demand met by each fuel source, stacked to 100%.",
+      "gridPos": { "x": 12, "y": 6, "w": 12, "h": 8 },
+      "datasource": { "type": "postgres", "uid": "TimescaleDB" },
+      "targets": [{
+        "refId": "A",
+        "format": "time_series",
+        "rawQuery": true,
+        "rawSql": "SELECT from_ts AS \"time\", fuel AS metric, percentage FROM generation_mix WHERE $__timeFilter(from_ts) ORDER BY 1"
+      }],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 35,
+            "showPoints": "never",
+            "stacking": { "mode": "normal", "group": "A" },
+            "spanNulls": true
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      }
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "Weather drivers",
+      "description": "Wind speed at 100m hub height and temperature -- the two weather variables that move UK power prices.",
+      "gridPos": { "x": 0, "y": 14, "w": 12, "h": 8 },
+      "datasource": { "type": "postgres", "uid": "TimescaleDB" },
+      "targets": [{
+        "refId": "A",
+        "format": "time_series",
+        "rawQuery": true,
+        "rawSql": "SELECT timestamp AS \"time\", wind_speed_100m AS \"wind km/h\", temperature_2m AS \"temp C\" FROM weather WHERE $__timeFilter(timestamp) ORDER BY 1"
+      }],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "showPoints": "never",
+            "spanNulls": true
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "none" }
+      }
+    },
+    {
+      "id": 8,
+      "type": "table",
+      "title": "Pipeline health",
+      "description": "Data freshness per stream. Rows older than 15 minutes mean a producer or consumer has stalled.",
+      "gridPos": { "x": 12, "y": 14, "w": 12, "h": 8 },
+      "datasource": { "type": "postgres", "uid": "TimescaleDB" },
+      "targets": [{
+        "refId": "A",
+        "format": "table",
+        "rawQuery": true,
+        "rawSql": "SELECT 'system_prices' AS stream, MAX(ingested_at) AS last_seen, ROUND(EXTRACT(EPOCH FROM (now() - MAX(ingested_at)))/60, 1) AS age_minutes FROM system_prices UNION ALL SELECT 'carbon_intensity', MAX(ingested_at), ROUND(EXTRACT(EPOCH FROM (now() - MAX(ingested_at)))/60, 1) FROM carbon_intensity UNION ALL SELECT 'generation_mix', MAX(ingested_at), ROUND(EXTRACT(EPOCH FROM (now() - MAX(ingested_at)))/60, 1) FROM generation_mix UNION ALL SELECT 'weather', MAX(ingested_at), ROUND(EXTRACT(EPOCH FROM (now() - MAX(ingested_at)))/60, 1) FROM weather UNION ALL SELECT 'market_metrics', MAX(metric_ts), ROUND(EXTRACT(EPOCH FROM (now() - MAX(metric_ts)))/60, 1) FROM market_metrics ORDER BY stream"
+      }],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "age_minutes" },
+            "properties": [
+              { "id": "unit", "value": "none" },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    { "color": "green", "value": null },
+                    { "color": "orange", "value": 15 },
+                    { "color": "red", "value": 60 }
+                  ]
+                }
+              },
+              { "id": "custom.cellOptions", "value": { "type": "color-background" } }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm"
+      }
+    }
+  ]
+}
