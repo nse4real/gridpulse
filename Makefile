@@ -2,7 +2,7 @@
 # On Windows, run these via Git Bash, WSL, or `make` if installed;
 # every target also works copy-pasted directly into PowerShell.
 
-.PHONY: up down producer consumer metrics test sql
+.PHONY: up down producer consumer metrics test sql backfill
 
 up:        ## Start the full stack (Redpanda, TimescaleDB, Grafana)
 	docker compose up -d
@@ -22,6 +22,9 @@ producers-all:  ## Stream all sources (run each in its own terminal)
 
 consumer:  ## Land system prices into TimescaleDB
 	python consumers/system_prices_consumer.py
+
+backfill:  ## Replay the last 7 days of history through Redpanda
+	python scripts/backfill.py
 
 metrics:   ## Run the domain intelligence engine
 	python metrics/calculator.py

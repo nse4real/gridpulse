@@ -11,6 +11,7 @@ datasources:
     secureJsonData:
       password: ${POSTGRES_PASSWORD}
     jsonData:
+      database: ${POSTGRES_DB}  # Grafana 10.4+ reads the database from jsonData
       sslmode: disable
       postgresVersion: 1600
       timescaledb: true

@@ -4,7 +4,7 @@
   "tags": ["gridpulse", "energy"],
   "timezone": "browser",
   "refresh": "30s",
-  "time": { "from": "now-24h", "to": "now" },
+  "time": { "from": "now-7d", "to": "now" },
   "schemaVersion": 39,
   "version": 1,
   "panels": [
@@ -14,7 +14,7 @@
       "title": "Price cap headroom",
       "description": "Live wholesale price vs Ofgem's assumed allowance. Red = suppliers buying above the cap assumption.",
       "gridPos": { "x": 0, "y": 0, "w": 6, "h": 6 },
-      "datasource": { "type": "postgres", "uid": "TimescaleDB" },
+      "datasource": { "type": "grafana-postgresql-datasource", "uid": "TimescaleDB" },
       "targets": [{
         "refId": "A",
         "format": "table",
@@ -50,7 +50,7 @@
       "title": "Market stress index",
       "description": "Composite of buy/sell spread, imbalance volume, price volatility and wind shortfall. 0 = calm, 100 = severe stress.",
       "gridPos": { "x": 6, "y": 0, "w": 6, "h": 6 },
-      "datasource": { "type": "postgres", "uid": "TimescaleDB" },
+      "datasource": { "type": "grafana-postgresql-datasource", "uid": "TimescaleDB" },
       "targets": [{
         "refId": "A",
         "format": "table",
@@ -86,7 +86,7 @@
       "title": "Spark spread",
       "description": "Electricity price minus gas-to-power cost. Positive = profitable to generate from gas.",
       "gridPos": { "x": 12, "y": 0, "w": 6, "h": 6 },
-      "datasource": { "type": "postgres", "uid": "TimescaleDB" },
+      "datasource": { "type": "grafana-postgresql-datasource", "uid": "TimescaleDB" },
       "targets": [{
         "refId": "A",
         "format": "table",
@@ -121,7 +121,7 @@
       "title": "Carbon intensity now",
       "description": "GB grid carbon intensity, gCO2/kWh.",
       "gridPos": { "x": 18, "y": 0, "w": 6, "h": 6 },
-      "datasource": { "type": "postgres", "uid": "TimescaleDB" },
+      "datasource": { "type": "grafana-postgresql-datasource", "uid": "TimescaleDB" },
       "targets": [{
         "refId": "A",
         "format": "table",
@@ -157,7 +157,7 @@
       "title": "System buy / sell prices",
       "description": "Half-hourly settlement prices from Elexon BMRS. Spikes in buy price = grid scarcity events.",
       "gridPos": { "x": 0, "y": 6, "w": 12, "h": 8 },
-      "datasource": { "type": "postgres", "uid": "TimescaleDB" },
+      "datasource": { "type": "grafana-postgresql-datasource", "uid": "TimescaleDB" },
       "targets": [
         {
           "refId": "A",
@@ -190,7 +190,7 @@
       "title": "Generation mix by fuel",
       "description": "Share of GB demand met by each fuel source, stacked to 100%.",
       "gridPos": { "x": 12, "y": 6, "w": 12, "h": 8 },
-      "datasource": { "type": "postgres", "uid": "TimescaleDB" },
+      "datasource": { "type": "grafana-postgresql-datasource", "uid": "TimescaleDB" },
       "targets": [{
         "refId": "A",
         "format": "time_series",
@@ -209,7 +209,17 @@
             "spanNulls": true
           }
         },
-        "overrides": []
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "wind" },    "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "#5794F2" } }] },
+          { "matcher": { "id": "byName", "options": "solar" },   "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "#FADE2A" } }] },
+          { "matcher": { "id": "byName", "options": "gas" },     "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "#FF9830" } }] },
+          { "matcher": { "id": "byName", "options": "nuclear" }, "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "#B877D9" } }] },
+          { "matcher": { "id": "byName", "options": "imports" }, "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "#F2495C" } }] },
+          { "matcher": { "id": "byName", "options": "biomass" }, "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "#73BF69" } }] },
+          { "matcher": { "id": "byName", "options": "hydro" },   "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "#8AB8FF" } }] },
+          { "matcher": { "id": "byName", "options": "coal" },    "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "#5A5A5A" } }] },
+          { "matcher": { "id": "byName", "options": "other" },   "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "#A0A0A0" } }] }
+        ]
       },
       "options": {
         "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true },
@@ -222,7 +232,7 @@
       "title": "Weather drivers",
       "description": "Wind speed at 100m hub height and temperature -- the two weather variables that move UK power prices.",
       "gridPos": { "x": 0, "y": 14, "w": 12, "h": 8 },
-      "datasource": { "type": "postgres", "uid": "TimescaleDB" },
+      "datasource": { "type": "grafana-postgresql-datasource", "uid": "TimescaleDB" },
       "targets": [{
         "refId": "A",
         "format": "time_series",
@@ -252,7 +262,7 @@
       "title": "Pipeline health",
       "description": "Data freshness per stream. Rows older than 15 minutes mean a producer or consumer has stalled.",
       "gridPos": { "x": 12, "y": 14, "w": 12, "h": 8 },
-      "datasource": { "type": "postgres", "uid": "TimescaleDB" },
+      "datasource": { "type": "grafana-postgresql-datasource", "uid": "TimescaleDB" },
       "targets": [{
         "refId": "A",
         "format": "table",

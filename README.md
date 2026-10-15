@@ -4,6 +4,8 @@
 
 An open-source energy market monitoring platform streaming UK grid data through Kafka (Redpanda) into TimescaleDB, with a Grafana terminal-style dashboard. Built for data engineers who understand energy markets.
 
+![GridPulse Grafana dashboard -- 7 days of live UK grid data](docs/screenshots/grafana-dashboard.png)
+
 ---
 
 ## The problem
@@ -115,6 +117,29 @@ flowchart LR
 
 ---
 
+## Screenshots
+
+All captured from a local run against live, real UK grid data (7-day backfill plus live polling).
+
+### Grafana: the trading-desk view
+
+![Grafana dashboard](docs/screenshots/grafana-dashboard.png)
+
+- **Top row -- the commercial signals.** Price cap headroom (red: suppliers are buying power above what Ofgem's cap assumes), market stress gauge, spark spread (green: gas-fired generation is profitable right now) and live carbon intensity.
+- **System buy / sell prices** -- every half-hourly settlement period from Elexon BMRS. Since the 2015 move to a single imbalance price the two lines usually coincide; spikes are grid scarcity events.
+- **Generation mix** -- share of GB demand met by each fuel, stacked to 100%. Wind-heavy periods (blue) line up with the price troughs on the left -- over the captured week, wind share and system price correlate at -0.52.
+- **Weather drivers** -- wind speed at 100m hub height and temperature, the two weather variables that move UK power prices.
+- **Pipeline health** -- minutes since each stream last landed a row; amber after 15, red after 60.
+
+### Redpanda Console: the streaming layer
+
+| Topics | Live messages | Consumer groups |
+|---|---|---|
+| ![Topics](docs/screenshots/redpanda-topics.png) | ![Messages](docs/screenshots/redpanda-messages.png) | ![Consumer groups](docs/screenshots/redpanda-consumer-groups.png) |
+| One topic per source, 7-day retention. | Real Elexon settlement records, keyed `{date}-{period}` for idempotent upserts. | All four consumers stable with **zero offset lag** -- everything produced has landed in TimescaleDB. |
+
+---
+
 ## Getting started
 
 **Prerequisites:** Docker Desktop, Python 3.12+.
@@ -133,6 +158,9 @@ docker compose up -d
 # Seed reference data and continuous aggregates
 type sql\001_reference_data.sql | docker exec -i timescaledb psql -U gridpulse -d gridpulse
 type sql\002_continuous_aggregates.sql | docker exec -i timescaledb psql -U gridpulse -d gridpulse
+
+# Optional: backfill the last 7 days so the charts have history
+python scripts/backfill.py
 
 # Run pipelines (each in its own terminal)
 python producers/system_prices_producer.py
@@ -170,9 +198,11 @@ gridpulse/
 ├── producers/          # API -> Redpanda, one per data source
 ├── consumers/          # Redpanda -> TimescaleDB, with validation + DLQ
 ├── metrics/            # Domain intelligence engine (headroom, stress, spark spread)
+├── scripts/            # One-off utilities (7-day history backfill)
 ├── common/             # Shared validation rules and DLQ helper
 ├── sql/                # Reference data seeds + continuous aggregates
 ├── grafana/            # Datasource and dashboard provisioning (dashboard as code)
+├── docs/screenshots/   # README images
 ├── tests/              # Unit tests for validation and domain maths
 ├── docker-compose.yml
 └── Makefile
